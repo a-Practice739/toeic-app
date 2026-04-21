@@ -43,6 +43,8 @@
         
         /* 回主選單按鈕 */
         .back-btn { text-align: center; margin-top: 15px; color: var(--primary); cursor: pointer; font-size: 0.9rem; text-decoration: underline; }
+        
+        .reminder { text-align: center; font-size: 0.8rem; color: #999; margin-top: 15px; }
     </style>
 </head>
 <body>
@@ -61,6 +63,7 @@
     <button class="btn-primary" onclick="startGame('all')">一、隨機單元 (所有單字)</button>
     <button class="btn-primary btn-secondary" onclick="startGame('saved')">二、單字複習 (只測驗錯題/愛心)</button>
     <div class="back-btn" onclick="logout()">切換使用者</div>
+    <div class="reminder">💡 手機若無聲音，請確認是否關閉了靜音模式</div>
 </div>
 
 <div id="game-container" class="screen-container">
@@ -154,6 +157,13 @@
 
     // 3. 開始測驗
     function startGame(mode) {
+        // 【重要修改】解鎖手機語音限制 (播放一段無聲的語音以取得瀏覽器許可)
+        if ('speechSynthesis' in window) {
+            window.speechSynthesis.cancel(); // 先清空佇列
+            let unlockUtterance = new SpeechSynthesisUtterance('');
+            window.speechSynthesis.speak(unlockUtterance);
+        }
+
         currentMode = mode;
         if (mode === 'saved') {
             if (savedWords.length === 0) {
@@ -228,11 +238,10 @@
             
             let feedbackHTML = `<div>Excellent! ${currentQuestion.example}</div>`;
 
-            // 【新增邏輯】複習模式：答對時增加計數，滿3次則移除
+            // 複習模式：答對時增加計數，滿3次則移除
             if (currentMode === 'saved') {
                 let savedWordIndex = savedWords.findIndex(w => w.word === currentQuestion.word);
                 if (savedWordIndex !== -1) {
-                    // 初始化或增加正確次數
                     savedWords[savedWordIndex].correctCount = (savedWords[savedWordIndex].correctCount || 0) + 1;
                     let currentStreak = savedWords[savedWordIndex].correctCount;
 
@@ -251,7 +260,7 @@
             btn.classList.add('wrong');
             feedbackDiv.innerHTML = `<div>正確答案是: ${currentQuestion.meaning}</div>`;
             
-            // 【新增邏輯】答錯時，將其加入錯題庫，並將連續答對次數歸零
+            // 答錯時，將其加入錯題庫，並將連續答對次數歸零
             saveWordToUser(currentQuestion);
         }
 
@@ -264,26 +273,28 @@
     // 6. 語音功能
     function playAudio() {
         if (!currentQuestion) return;
-        const utterance = new SpeechSynthesisUtterance(currentQuestion.word);
-        utterance.lang = 'en-US'; 
-        utterance.rate = 0.9;     
-        window.speechSynthesis.speak(utterance);
+        
+        // 【重要修改】發音前先強制停止前一個可能卡住的語音
+        if ('speechSynthesis' in window) {
+            window.speechSynthesis.cancel(); 
+
+            const utterance = new SpeechSynthesisUtterance(currentQuestion.word);
+            utterance.lang = 'en-US'; 
+            utterance.rate = 0.9;     
+            window.speechSynthesis.speak(utterance);
+        }
     }
 
     // 7. 愛心/錯題庫管理
     function saveWordToUser(wordObj) {
         let existingWord = savedWords.find(w => w.word === wordObj.word);
         if (!existingWord) {
-            // 新增單字，初始化連續答對次數為 0
             savedWords.push({ ...wordObj, correctCount: 0 });
             localStorage.setItem(`toeic_saved_${currentUser}`, JSON.stringify(savedWords));
             updateHeartUI();
         } else {
-            // 如果單字已存在但又答錯了，重置正確次數為 0
             existingWord.correctCount = 0;
             localStorage.setItem(`toeic_saved_${currentUser}`, JSON.stringify(savedWords));
-            
-            // 由於只更新內部屬性，若是手動點擊愛心引發的，還是要維持 UI 狀態
             updateHeartUI(); 
         }
     }
@@ -292,7 +303,6 @@
         savedWords = savedWords.filter(w => w.word !== wordString);
         localStorage.setItem(`toeic_saved_${currentUser}`, JSON.stringify(savedWords));
         
-        // 若在複習模式下被移除，同步將其從目前的題庫列隊中刪除，避免同一局再次抽到
         if (currentMode === 'saved') {
             currentVocabList = currentVocabList.filter(w => w.word !== wordString);
         }
