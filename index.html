@@ -43,12 +43,11 @@
         
         /* 回主選單按鈕 */
         .back-btn { text-align: center; margin-top: 15px; color: var(--primary); cursor: pointer; font-size: 0.9rem; text-decoration: underline; }
+        
         .reminder { text-align: center; font-size: 0.8rem; color: #999; margin-top: 15px; }
     </style>
 </head>
 <body>
-
-<audio id="tts-player" playsinline></audio>
 
 <div id="loading-screen" class="loading">載入多益單字庫中...</div>
 
@@ -64,7 +63,7 @@
     <button class="btn-primary" onclick="startGame('all')">一、隨機單元 (所有單字)</button>
     <button class="btn-primary btn-secondary" onclick="startGame('saved')">二、單字複習 (只測驗錯題/愛心)</button>
     <div class="back-btn" onclick="logout()">切換使用者</div>
-    <div class="reminder">💡 手機若無聲音，請確認是否關閉了實體靜音鍵</div>
+    <div class="reminder">💡 手機若無聲音，請確認是否關閉了靜音模式</div>
 </div>
 
 <div id="game-container" class="screen-container">
@@ -87,13 +86,13 @@
 <script>
     const SHEET_ID = '1OmBnWJ00RFGq6ppBxEmnR2ipT_-RyqRAo3DTZc3915M'; 
     let vocabData = [];
-    let savedWords = []; 
-    let currentVocabList = []; 
+    let savedWords = []; // 使用者的錯題/收藏清單
+    let currentVocabList = []; // 當前測驗用的題庫
     let currentQuestion = null;
     let score = 0;
     let count = 0;
     let currentUser = "";
-    let currentMode = "all"; 
+    let currentMode = "all"; // 'all' 或 'saved'
 
     // 1. 初始化與讀取資料
     async function init() {
@@ -157,4 +156,185 @@
     }
 
     // 3. 開始測驗
-    function startGame(mode
+    function startGame(mode) {
+        // 【重要修改】解鎖手機語音限制 (播放一段無聲的語音以取得瀏覽器許可)
+        if ('speechSynthesis' in window) {
+            window.speechSynthesis.cancel(); // 先清空佇列
+            let unlockUtterance = new SpeechSynthesisUtterance('');
+            window.speechSynthesis.speak(unlockUtterance);
+        }
+
+        currentMode = mode;
+        if (mode === 'saved') {
+            if (savedWords.length === 0) {
+                alert("你的錯題庫目前是空的喔！請先在隨機單元中學習。");
+                return;
+            }
+            currentVocabList = [...savedWords];
+        } else {
+            currentVocabList = [...vocabData];
+        }
+
+        score = 0;
+        count = 0;
+        document.getElementById('score').innerText = score;
+        document.getElementById('progress').innerText = count;
+        
+        switchScreen('game-container');
+        newQuestion();
+    }
+
+    // 4. 產生新題目
+    function newQuestion() {
+        // 如果測驗達到10題，或是複習模式下題庫剛好被清空
+        if (count >= 10 || currentVocabList.length === 0) {
+            let msg = `測驗結束！你的得分是：${score}`;
+            if (currentMode === 'saved' && currentVocabList.length === 0 && count > 0) {
+                msg = `太棒了！錯題庫的單字都被你消滅了！得分：${score}`;
+            }
+            alert(msg);
+            showMenu();
+            return;
+        }
+
+        currentQuestion = currentVocabList[Math.floor(Math.random() * currentVocabList.length)];
+        
+        let distractors = vocabData
+            .filter(v => v.word !== currentQuestion.word)
+            .sort(() => 0.5 - Math.random())
+            .slice(0, 3);
+
+        let choices = [...distractors, currentQuestion].sort(() => 0.5 - Math.random());
+
+        document.getElementById('word-display').innerText = currentQuestion.word;
+        document.getElementById('feedback').innerHTML = "";
+        updateHeartUI();
+        
+        const optionsDiv = document.getElementById('options');
+        optionsDiv.innerHTML = "";
+
+        choices.forEach(choice => {
+            const btn = document.createElement('button');
+            btn.className = 'option-btn';
+            btn.innerText = choice.meaning;
+            btn.onclick = () => checkAnswer(choice, btn);
+            optionsDiv.appendChild(btn);
+        });
+
+        playAudio();
+    }
+
+    // 5. 檢查答案
+    function checkAnswer(choice, btn) {
+        const allButtons = document.querySelectorAll('.option-btn');
+        allButtons.forEach(b => b.disabled = true);
+
+        const feedbackDiv = document.getElementById('feedback');
+
+        if (choice.word === currentQuestion.word) {
+            btn.classList.add('correct');
+            score += 10;
+            document.getElementById('score').innerText = score;
+            
+            let feedbackHTML = `<div>Excellent! ${currentQuestion.example}</div>`;
+
+            // 複習模式：答對時增加計數，滿3次則移除
+            if (currentMode === 'saved') {
+                let savedWordIndex = savedWords.findIndex(w => w.word === currentQuestion.word);
+                if (savedWordIndex !== -1) {
+                    savedWords[savedWordIndex].correctCount = (savedWords[savedWordIndex].correctCount || 0) + 1;
+                    let currentStreak = savedWords[savedWordIndex].correctCount;
+
+                    if (currentStreak >= 3) {
+                        feedbackHTML += `<div class="streak-msg">🎉 連續答對 3 次，已自動從錯題庫移除！</div>`;
+                        removeWordFromUser(currentQuestion.word);
+                    } else {
+                        feedbackHTML += `<div class="streak-msg">連續答對：${currentStreak} / 3 次</div>`;
+                        localStorage.setItem(`toeic_saved_${currentUser}`, JSON.stringify(savedWords));
+                    }
+                }
+            }
+            feedbackDiv.innerHTML = feedbackHTML;
+
+        } else {
+            btn.classList.add('wrong');
+            feedbackDiv.innerHTML = `<div>正確答案是: ${currentQuestion.meaning}</div>`;
+            
+            // 答錯時，將其加入錯題庫，並將連續答對次數歸零
+            saveWordToUser(currentQuestion);
+        }
+
+        count++;
+        document.getElementById('progress').innerText = count;
+        
+        setTimeout(newQuestion, 2500);
+    }
+
+    // 6. 語音功能
+    function playAudio() {
+        if (!currentQuestion) return;
+        
+        // 【重要修改】發音前先強制停止前一個可能卡住的語音
+        if ('speechSynthesis' in window) {
+            window.speechSynthesis.cancel(); 
+
+            const utterance = new SpeechSynthesisUtterance(currentQuestion.word);
+            utterance.lang = 'en-US'; 
+            utterance.rate = 0.9;     
+            window.speechSynthesis.speak(utterance);
+        }
+    }
+
+    // 7. 愛心/錯題庫管理
+    function saveWordToUser(wordObj) {
+        let existingWord = savedWords.find(w => w.word === wordObj.word);
+        if (!existingWord) {
+            savedWords.push({ ...wordObj, correctCount: 0 });
+            localStorage.setItem(`toeic_saved_${currentUser}`, JSON.stringify(savedWords));
+            updateHeartUI();
+        } else {
+            existingWord.correctCount = 0;
+            localStorage.setItem(`toeic_saved_${currentUser}`, JSON.stringify(savedWords));
+            updateHeartUI(); 
+        }
+    }
+
+    function removeWordFromUser(wordString) {
+        savedWords = savedWords.filter(w => w.word !== wordString);
+        localStorage.setItem(`toeic_saved_${currentUser}`, JSON.stringify(savedWords));
+        
+        if (currentMode === 'saved') {
+            currentVocabList = currentVocabList.filter(w => w.word !== wordString);
+        }
+        
+        updateHeartUI();
+    }
+
+    function toggleHeart() {
+        const exists = savedWords.find(w => w.word === currentQuestion.word);
+        if (exists) {
+            removeWordFromUser(currentQuestion.word);
+        } else {
+            saveWordToUser(currentQuestion);
+        }
+    }
+
+    function updateHeartUI() {
+        if (!currentQuestion) return;
+        const heartBtn = document.getElementById('heart-btn');
+        const exists = savedWords.find(w => w.word === currentQuestion.word);
+        
+        if (exists) {
+            heartBtn.innerText = '❤️';
+            heartBtn.className = 'icon-btn heart-saved';
+        } else {
+            heartBtn.innerText = '🤍';
+            heartBtn.className = 'icon-btn heart-unsaved';
+        }
+    }
+
+    init();
+</script>
+
+</body>
+</html>
